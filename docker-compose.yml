@@ -1,5 +1,5 @@
 services:
-  hdt3:
+  pryct2:
     build:
       context: .
       dockerfile: Dockerfile
