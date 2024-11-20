@@ -48,24 +48,44 @@ void CPU_HoughTran(unsigned char *pic, int w, int h, int **acc) {
 
 
 // GPU kernel. One thread per image pixel is spawned.
-__global__ void GPU_HoughTran(unsigned char *pic, int w, int h, int *acc, double rMax, double rScale) {
+__global__ void GPU_HoughTranShared(unsigned char *pic, int w, int h, int *acc, double rMax, double rScale) {
+    // Identificadores locales y globales
     int gloID = blockIdx.x * blockDim.x + threadIdx.x;
-    if (gloID >= w * h) return;
+    int locID = threadIdx.x;
 
-    int xCent = w / 2;
-    int yCent = h / 2;
+    // Declarar memoria compartida
+    __shared__ int localAcc[degreeBins * rBins];
 
-    int xCoord = (gloID % w) - xCent;
-    int yCoord = yCent - (gloID / w);
+    // Inicializar acumulador local
+    for (int idx = locID; idx < degreeBins * rBins; idx += blockDim.x) {
+        localAcc[idx] = 0;
+    }
+    __syncthreads();  // Barrera de sincronización
 
-    if (pic[gloID] > 0) {
-        for (int tIdx = 0; tIdx < degreeBins; tIdx++) {
-            double r = xCoord * d_Cos[tIdx] + yCoord * d_Sin[tIdx];
-            int rIdx = (r + rMax) / rScale;
-            if (rIdx >= 0 && rIdx < rBins) {
-                atomicAdd(acc + (rIdx * degreeBins + tIdx), 1);
+    if (gloID < w * h) {
+        int xCent = w / 2;
+        int yCent = h / 2;
+
+        int xCoord = (gloID % w) - xCent;
+        int yCoord = yCent - (gloID / w);
+
+        if (pic[gloID] > 0) {
+            for (int tIdx = 0; tIdx < degreeBins; tIdx++) {
+                double r = xCoord * d_Cos[tIdx] + yCoord * d_Sin[tIdx];
+                int rIdx = (r + rMax) / rScale;
+                if (rIdx >= 0 && rIdx < rBins) {
+                    // Actualizar el acumulador local
+                    atomicAdd(&localAcc[rIdx * degreeBins + tIdx], 1);
+                }
             }
         }
+    }
+
+    __syncthreads();  // Barrera de sincronización antes de copiar a acc
+
+    // Copiar de localAcc a acc
+    for (int idx = locID; idx < degreeBins * rBins; idx += blockDim.x) {
+        atomicAdd(&acc[idx], localAcc[idx]);
     }
 }
 
@@ -119,8 +139,8 @@ int main(int argc, char **argv) {
     cudaEventCreate(&stop);
     cudaEventRecord(start, 0);
 
-    GPU_HoughTran<<<blockNum, 256>>>(d_in, w, h, d_hough, rMax, rScale);
-
+    GPU_HoughTranShared<<<blockNum, 256>>>(d_in, w, h, d_hough, rMax, rScale);
+    
     cudaEventRecord(stop, 0);
     cudaEventSynchronize(stop);
 
@@ -201,7 +221,7 @@ int main(int argc, char **argv) {
     }
 
     // Guardar la imagen resultante
-    cv::imwrite("outputConst.png", imgColor);
+    cv::imwrite("outputCompartida.png", imgColor);
     printf("Generated marked image: output.png \n");
 
 
