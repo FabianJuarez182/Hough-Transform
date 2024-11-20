@@ -1,10 +1,7 @@
-all: pgm.o houghGlobal houghConst
+all: pgm.o houghGlobal
 
 houghGlobal: houghGlobal.cu pgm.o
-    nvcc houghGlobal.cu pgm.o -o houghGlobal
-
-houghConst: houghConst.cu pgm.o
-    nvcc houghConst.cu pgm.o -o houghConst
+		nvcc houghGlobal.cu pgm.o -o houghGlobal -lopencv_core -lopencv_highgui -lopencv_imgcodecs -lopencv_imgproc -I/usr/include/opencv4
 
 pgm.o: common/pgm.cpp
-    g++ -c common/pgm.cpp -o pgm.o
+		g++ -c common/pgm.cpp -o pgm.o
