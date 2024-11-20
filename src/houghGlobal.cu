@@ -10,38 +10,41 @@
 #include "common/pgm.h"
 
 const double degreeInc = 0.5;
-const int degreeBins = 180 / degreeInc;
+const int degreeBins = static_cast<int>(180 / degreeInc);
 const int rBins = 100;
 const double radInc = degreeInc * M_PI / 180;
 
 // The CPU function returns a pointer to the accummulator
 void CPU_HoughTran (unsigned char *pic, int w, int h, int **acc)
 {
-  double rMax = sqrt (1.0 * w * w + 1.0 * h * h) / 2;  //(w^2 + h^2)/2, radio max equivalente a centro -> esquina
-  *acc = new int[rBins * degreeBins];            //el acumulador, conteo depixeles encontrados, 90*180/degInc = 9000
-  memset (*acc, 0, sizeof (int) * rBins * degreeBins); //init en ceros
-  int xCent = w / 2;
-  int yCent = h / 2;
-  double rScale = 2 * rMax / rBins;
+    double rMax = sqrt (1.0 * w * w + 1.0 * h * h) / 2.0;  //(w^2 + h^2)/2, radio max equivalente a centro -> esquina
+    *acc = new int[rBins * degreeBins];            //el acumulador, conteo depixeles encontrados, 90*180/degInc = 9000
+    memset (*acc, 0, sizeof(int) * rBins * degreeBins); //init en ceros
+    int xCent = w / 2;
+    int yCent = h / 2;
+    double rScale = 2.0 * rMax / rBins;
 
-  for (int i = 0; i < w; i++) //por cada pixel
-    for (int j = 0; j < h; j++) //...
-      {
-        int idx = j * w + i;
-        if (pic[idx] > 0) //si pasa thresh, entonces lo marca
-          {
-            int xCoord = i - xCent;
-            int yCoord = yCent - j;  // y-coord has to be reversed
-            double theta = 0.0;         // actual angle
-            for (int tIdx = 0; tIdx < degreeBins; tIdx++) //add 1 to all lines in that pixel
-              {
-                double r = xCoord * cos (theta) + yCoord * sin (theta);
-                int rIdx = (r + rMax) / rScale;
-                (*acc)[rIdx * degreeBins + tIdx]++; //+1 para este radio r y este theta
-                theta += radInc;
-              }
-          }
-      }
+    for (int i = 0; i < w; i++) //por cada pixel
+        for (int j = 0; j < h; j++) //...
+        {
+            int idx = j * w + i;
+            if (pic[idx] > 0) //si pasa thresh, entonces lo marca
+            {
+                int xCoord = i - xCent;
+                int yCoord = yCent - j;  // y-coord has to be reversed
+                double theta = 0.0;         // actual angle
+                for (int tIdx = 0; tIdx < degreeBins; tIdx++) //add 1 to all lines in that pixel
+                {
+                    double r = xCoord * cos (theta) + yCoord * sin (theta);
+                    int rIdx = (r + rMax) / rScale;
+                    if (rIdx >= 0 && rIdx < rBins)
+                    {
+                        (*acc)[rIdx * degreeBins + tIdx]++; //+1 para este radio r y este theta
+                    }
+                    theta += radInc;
+                }
+            }
+        }
 }
 
 // GPU kernel. One thread per image pixel is spawned.
@@ -59,8 +62,10 @@ __global__ void GPU_HoughTran(unsigned char *pic, int w, int h, int *acc, double
         for (int tIdx = 0; tIdx < degreeBins; tIdx++) {
             double r = xCoord * d_Cos[tIdx] + yCoord * d_Sin[tIdx];
             int rIdx = (r + rMax) / rScale;
-
+            if (rIdx >= 0 && rIdx < rBins)
+            {
             atomicAdd(acc + (rIdx * degreeBins + tIdx), 1);
+            }
         }
     }
 }
@@ -87,9 +92,9 @@ int main(int argc, char **argv) {
     // CPU calculation
     CPU_HoughTran(inImg.pixels, w, h, &cpuht);
 
-    float *pcCos = (float *) malloc(sizeof(float) * degreeBins);
-    float *pcSin = (float *) malloc(sizeof(float) * degreeBins);
-    float rad = 0;
+    double *pcCos = (double *) malloc(sizeof(double) * degreeBins);
+    double *pcSin = (double *) malloc(sizeof(double) * degreeBins);
+    double rad = 0;
     for (int i = 0; i < degreeBins; i++) {
         pcCos[i] = cos(rad);
         pcSin[i] = sin(rad);
@@ -99,8 +104,8 @@ int main(int argc, char **argv) {
     cudaMemcpy(d_Cos, pcCos, sizeof(double) * degreeBins, cudaMemcpyHostToDevice);
     cudaMemcpy(d_Sin, pcSin, sizeof(double) * degreeBins, cudaMemcpyHostToDevice);
 
-    float rMax = sqrt(1.0 * w * w + 1.0 * h * h) / 2;
-    float rScale = 2 * rMax / rBins;
+    double rMax = sqrt(1.0 * w * w + 1.0 * h * h) / 2;
+    double rScale = 2 * rMax / rBins;
 
     unsigned char *d_in, *h_in;
     int *d_hough, *h_hough;
@@ -144,32 +149,71 @@ int main(int argc, char **argv) {
     }
     printf("Done!\n");
 
-    cv::Mat outputImage(h, w, CV_8UC1, inImg.pixels);
+
+    const int threshold = 4240 ;
+
+    // Crear imagen a color para dibujar las líneas
+    cv::Mat img(h, w, CV_8UC1, inImg.pixels);
+    cv::Mat imgColor;
+    cvtColor(img, imgColor, cv::COLOR_GRAY2BGR);
+
+    int xCenter = (w / 2);
+    int yCenter = (h / 2);
+
+    // Vector para almacenar líneas con sus pesos
+    std::vector<std::pair<cv::Vec2f, int>> linesWithWeights;
+
+    // Recorrer el acumulador y recoger las líneas
     for (int rIdx = 0; rIdx < rBins; rIdx++) {
         for (int tIdx = 0; tIdx < degreeBins; tIdx++) {
-            if (h_hough[rIdx * degreeBins + tIdx] > threshold) {
-                double theta = tIdx * radInc;
-                double r = (rIdx * rScale) - rMax;
+            int weight = h_hough[(rIdx * degreeBins) + tIdx];
 
-                cv::Point pt1, pt2;
-                if (sin(theta) != 0) {  
-                    pt1 = cv::Point(0, int((r - 0 * cos(theta)) / sin(theta)));
-                    pt2 = cv::Point(w, int((r - w * cos(theta)) / sin(theta)));
-                } else {  // Linea vertical
-                    pt1 = cv::Point(int(r / cos(theta)), 0);
-                    pt2 = cv::Point(int(r / cos(theta)), h);
-                }
-
-                cv::line(outputImage, pt1, pt2, cv::Scalar(255, 255, 255), 1, cv::LINE_AA);
+            if (weight > threshold) {  // Solo incluir líneas relevantes
+                float rValue = ((rIdx * rScale) - rMax);  // Distancia r
+                float theta = (tIdx * radInc);           // Ángulo theta
+                linesWithWeights.push_back(std::make_pair(cv::Vec2f(theta, rValue), weight));
             }
         }
     }
-    printf("Done!\n");
 
-    const int threshold = 100;
+    // Ordenar las líneas por peso en orden descendente
+    std::sort(
+        linesWithWeights.begin(),
+        linesWithWeights.end(),
+        [](const std::pair<cv::Vec2f, int> &a, const std::pair<cv::Vec2f, int> &b) {
+            return a.second > b.second;
+        }
+    );
 
-    cv::imwrite("output.png", outputImage);
-    printf("Generated marked image: output.png");
+    // Dibujar las líneas principales
+    for (int i = 0; i < std::min(threshold, static_cast<int>(linesWithWeights.size())); i++) {
+        cv::Vec2f lineParams = linesWithWeights[i].first;
+        float theta = lineParams[0];
+        float r = lineParams[1];
+
+        double cosTheta = cos(theta);
+        double sinTheta = sin(theta);
+
+        double xValue = xCenter - (r * cosTheta);
+        double yValue = yCenter - (r * sinTheta);
+        double alpha = 1000;  // Factor para extender las líneas
+
+        // Dibujar la línea
+        cv::line(
+            imgColor,
+            cv::Point(cvRound(xValue + (alpha * (-sinTheta))),
+                    cvRound(yValue + (alpha * cosTheta))),
+            cv::Point(cvRound(xValue - (alpha * (-sinTheta))),
+                    cvRound(yValue - (alpha * cosTheta))),
+            cv::Scalar(0, 185, 0),
+            1,
+            cv::LINE_AA
+        );
+    }
+
+    // Guardar la imagen resultante
+    cv::imwrite("outputGlobal.png", imgColor);
+    printf("Generated marked image: output.png \n");
 
     cudaFree(d_in);
     cudaFree(d_hough);
