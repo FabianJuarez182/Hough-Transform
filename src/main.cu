@@ -53,12 +53,15 @@ __global__ void GPU_HoughTranShared(unsigned char *pic, int w, int h, int *acc, 
     int gloID = blockIdx.x * blockDim.x + threadIdx.x;
     int locID = threadIdx.x;
 
+    if (gloID >= w * h) return;
+
     // Declarar memoria compartida
-    __shared__ int localAcc[degreeBins * rBins];
+    const int blockSize = 256;
+    extern __shared__ int localAcc[degreeBins * rBins];
 
     // Inicializar acumulador local
-    for (int idx = locID; idx < degreeBins * rBins; idx += blockDim.x) {
-        localAcc[idx] = 0;
+    for (int idx = locID; i < blockSize; i += blockDim.x) {
+        localAcc[i] = 0;
     }
     __syncthreads();  // Barrera de sincronización
 
@@ -84,8 +87,12 @@ __global__ void GPU_HoughTranShared(unsigned char *pic, int w, int h, int *acc, 
     __syncthreads();  // Barrera de sincronización antes de copiar a acc
 
     // Copiar de localAcc a acc
-    for (int idx = locID; idx < degreeBins * rBins; idx += blockDim.x) {
-        atomicAdd(&acc[idx], localAcc[idx]);
+    //Transfer local accumulator to global accumulator
+    for (int i = locID; i < blockSize; i += blockDim.x) {
+        int globalIdx = blockIdx.x * blockSize + i; //Map to global accumulator
+        if (globalIdx < degreeBins * rBins) {
+            atomicAdd(&acc[globalIdx], localAcc[i]);
+        }
     }
 }
 
@@ -139,7 +146,7 @@ int main(int argc, char **argv) {
     cudaEventCreate(&stop);
     cudaEventRecord(start, 0);
 
-    GPU_HoughTranShared<<<blockNum, 256>>>(d_in, w, h, d_hough, rMax, rScale);
+    GPU_HoughTranSharedFixed<<<blockNum, 256, sharedMemorySize>>>(d_in, w, h, d_hough, rMax, rScale);
     
     cudaEventRecord(stop, 0);
     cudaEventSynchronize(stop);
