@@ -15,8 +15,8 @@ const int rBins = 100;
 const double radInc = degreeInc * M_PI / 180;
 
 // declaration of constant memory variables.
-_constant_ double d_Cos[degreeBins];
-_constant_ double d_Sin[degreeBins];
+__constant__ double d_Cos[degreeBins];
+__constant__ double d_Sin[degreeBins];
 
 // The CPU function returns a pointer to the accummulator
 void CPU_HoughTran(unsigned char *pic, int w, int h, int **acc) {
@@ -48,7 +48,7 @@ void CPU_HoughTran(unsigned char *pic, int w, int h, int **acc) {
 
 
 // GPU kernel. One thread per image pixel is spawned.
-_global_ void GPU_HoughTran(unsigned char *pic, int w, int h, int *acc, double rMax, double rScale) {
+__global__ void GPU_HoughTran(unsigned char *pic, int w, int h, int *acc, double rMax, double rScale) {
     int gloID = blockIdx.x * blockDim.x + threadIdx.x;
     if (gloID >= w * h) return;
 
