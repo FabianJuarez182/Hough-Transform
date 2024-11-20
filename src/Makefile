@@ -1,7 +1,10 @@
-all: pgm.o	hough
+all: pgm.o houghGlobal houghConst
 
-hough:	hough.cu pgm.o
-	nvcc hough.cu pgm.o -o hough
+houghGlobal: houghGlobal.cu pgm.o
+    nvcc houghGlobal.cu pgm.o -o houghGlobal
 
-pgm.o:	common/pgm.cpp
-	g++ -c common/pgm.cpp -o ./pgm.o
+houghConst: houghConst.cu pgm.o
+    nvcc houghConst.cu pgm.o -o houghConst
+
+pgm.o: common/pgm.cpp
+    g++ -c common/pgm.cpp -o pgm.o
