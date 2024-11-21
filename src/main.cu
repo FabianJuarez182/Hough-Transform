@@ -13,6 +13,7 @@ const double degreeInc = 0.5;
 const int degreeBins = static_cast<int>(180 / degreeInc);
 const int rBins = 100;
 const double radInc = degreeInc * M_PI / 180;
+const int sharedDegreeBins = 90;
 
 // declaration of constant memory variables.
 __constant__ double d_Cos[degreeBins];
@@ -46,6 +47,27 @@ void CPU_HoughTran(unsigned char *pic, int w, int h, int **acc) {
         }
 }
 
+// GPU kernel. One thread per image pixel is spawned.
+__global__ void GPU_HoughTran(unsigned char *pic, int w, int h, int *acc, double rMax, double rScale) {
+    int gloID = blockIdx.x * blockDim.x + threadIdx.x;
+    if (gloID >= w * h) return;
+
+    int xCent = w / 2;
+    int yCent = h / 2;
+
+    int xCoord = (gloID % w) - xCent;
+    int yCoord = yCent - (gloID / w);
+
+    if (pic[gloID] > 0) {
+        for (int tIdx = 0; tIdx < degreeBins; tIdx++) {
+            double r = xCoord * d_Cos[tIdx] + yCoord * d_Sin[tIdx];
+            int rIdx = (r + rMax) / rScale;
+            if (rIdx >= 0 && rIdx < rBins) {
+                atomicAdd(acc + (rIdx * degreeBins + tIdx), 1);
+            }
+        }
+    }
+}
 
 // GPU kernel. One thread per image pixel is spawned.
 __global__ void GPU_HoughTranShared(unsigned char *pic, int w, int h, int *acc, double rMax, double rScale) {
@@ -56,40 +78,37 @@ __global__ void GPU_HoughTranShared(unsigned char *pic, int w, int h, int *acc, 
     if (gloID >= w * h) return;
 
     // Declarar memoria compartida
-    const int blockSize = 256;
-    extern __shared__ int localAcc[degreeBins * rBins];
+    __shared__ int localAcc[sharedDegreeBins * rBins];
 
     // Inicializar acumulador local
-    for (int idx = locID; i < blockSize; i += blockDim.x) {
-        localAcc[i] = 0;
+    for (int idx = locID; idx < sharedDegreeBins * rBins; idx += blockDim.x) {
+        localAcc[idx] = 0;
     }
     __syncthreads();  // Barrera de sincronización
 
-    if (gloID < w * h) {
-        int xCent = w / 2;
-        int yCent = h / 2;
+    if (pic[gloID] > 0) {
+            int xCent = w / 2;
+            int yCent = h / 2;
 
-        int xCoord = (gloID % w) - xCent;
-        int yCoord = yCent - (gloID / w);
+            int xCoord = (gloID % w) - xCent;
+            int yCoord = yCent - (gloID / w);
 
-        if (pic[gloID] > 0) {
-            for (int tIdx = 0; tIdx < degreeBins; tIdx++) {
+            for (int tIdx = blockIdx.y * sharedDegreeBins; tIdx < degreeBins; tIdx += gridDim.y * sharedDegreeBins) {
+                int localTIdx = tIdx % sharedDegreeBins;  // Índice relativo al bloque
                 double r = xCoord * d_Cos[tIdx] + yCoord * d_Sin[tIdx];
                 int rIdx = (r + rMax) / rScale;
+
                 if (rIdx >= 0 && rIdx < rBins) {
-                    // Actualizar el acumulador local
-                    atomicAdd(&localAcc[rIdx * degreeBins + tIdx], 1);
+                    atomicAdd(&localAcc[rIdx * sharedDegreeBins + localTIdx], 1);
                 }
             }
         }
-    }
-
-    __syncthreads();  // Barrera de sincronización antes de copiar a acc
+        __syncthreads();  // Barrera de sincronización antes de copiar a acc
 
     // Copiar de localAcc a acc
     //Transfer local accumulator to global accumulator
-    for (int i = locID; i < blockSize; i += blockDim.x) {
-        int globalIdx = blockIdx.x * blockSize + i; //Map to global accumulator
+    for (int i = locID; i < sharedDegreeBins; i += blockDim.x) {
+        int globalIdx = blockIdx.x * sharedDegreeBins + i; //Map to global accumulator
         if (globalIdx < degreeBins * rBins) {
             atomicAdd(&acc[globalIdx], localAcc[i]);
         }
@@ -146,7 +165,9 @@ int main(int argc, char **argv) {
     cudaEventCreate(&stop);
     cudaEventRecord(start, 0);
 
-    GPU_HoughTranSharedFixed<<<blockNum, 256, sharedMemorySize>>>(d_in, w, h, d_hough, rMax, rScale);
+    dim3 grid(blockNum, (degreeBins + sharedDegreeBins - 1) / sharedDegreeBins);
+    dim3 block(256);
+    GPU_HoughTranShared<<<grid, block>>>(d_in, w, h, d_hough, rMax, rScale);
     
     cudaEventRecord(stop, 0);
     cudaEventSynchronize(stop);
