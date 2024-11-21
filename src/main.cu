@@ -71,46 +71,49 @@ __global__ void GPU_HoughTran(unsigned char *pic, int w, int h, int *acc, double
 
 // GPU kernel. One thread per image pixel is spawned.
 __global__ void GPU_HoughTranShared(unsigned char *pic, int w, int h, int *acc, double rMax, double rScale) {
-    // Identificadores locales y globales
-    int gloID = blockIdx.x * blockDim.x + threadIdx.x;
-    int locID = threadIdx.x;
+    int gloID = blockIdx.x * blockDim.x + threadIdx.x;  // Índice global único
+    int locID = threadIdx.x;  // Índice local dentro del bloque
 
-    if (gloID >= w * h) return;
+    if (gloID >= w * h) return;  // Salir si el hilo está fuera del rango
 
-    // Declarar memoria compartida
+    // Crear acumulador local en memoria compartida
     __shared__ int localAcc[sharedDegreeBins * rBins];
 
-    // Inicializar acumulador local
+    // Inicializar el acumulador local
     for (int idx = locID; idx < sharedDegreeBins * rBins; idx += blockDim.x) {
         localAcc[idx] = 0;
     }
-    __syncthreads();  // Barrera de sincronización
+    __syncthreads();  // Asegurar que todos los hilos inicialicen
 
+    // Calcular coordenadas relativas al centro de la imagen
+    int xCent = w / 2;
+    int yCent = h / 2;
+    int xCoord = (gloID % w) - xCent;
+    int yCoord = yCent - (gloID / w);
+
+    // Acumular datos en memoria compartida
     if (pic[gloID] > 0) {
-            int xCent = w / 2;
-            int yCent = h / 2;
-
-            int xCoord = (gloID % w) - xCent;
-            int yCoord = yCent - (gloID / w);
-
-            for (int tIdx = blockIdx.y * sharedDegreeBins; tIdx < degreeBins; tIdx += gridDim.y * sharedDegreeBins) {
-                int localTIdx = tIdx % sharedDegreeBins;  // Índice relativo al bloque
-                double r = xCoord * d_Cos[tIdx] + yCoord * d_Sin[tIdx];
+        for (int tIdx = 0; tIdx < sharedDegreeBins; tIdx++) {
+            int globalTIdx = blockIdx.y * sharedDegreeBins + tIdx;  // Índice global para los ángulos
+            if (globalTIdx < degreeBins) {  // Validar que el índice global esté en rango
+                double r = xCoord * d_Cos[globalTIdx] + yCoord * d_Sin[globalTIdx];
                 int rIdx = (r + rMax) / rScale;
 
                 if (rIdx >= 0 && rIdx < rBins) {
-                    atomicAdd(&localAcc[rIdx * sharedDegreeBins + localTIdx], 1);
+                    atomicAdd(&localAcc[rIdx * sharedDegreeBins + tIdx], 1);
                 }
             }
         }
-        __syncthreads();  // Barrera de sincronización antes de copiar a acc
+    }
+    __syncthreads();  // Asegurar que todos los hilos completen el cálculo
 
-    // Copiar de localAcc a acc
-    //Transfer local accumulator to global accumulator
-    for (int i = locID; i < sharedDegreeBins; i += blockDim.x) {
-        int globalIdx = blockIdx.x * sharedDegreeBins + i; //Map to global accumulator
-        if (globalIdx < degreeBins * rBins) {
-            atomicAdd(&acc[globalIdx], localAcc[i]);
+    // Transferir los datos acumulados a la memoria global
+    for (int idx = locID; idx < sharedDegreeBins * rBins; idx += blockDim.x) {
+        int rIdx = idx / sharedDegreeBins;  // Índice de r
+        int tIdx = idx % sharedDegreeBins + blockIdx.y * sharedDegreeBins;  // Índice de θ en global
+
+        if (tIdx < degreeBins && rIdx < rBins) {
+            atomicAdd(&acc[rIdx * degreeBins + tIdx], localAcc[idx]);
         }
     }
 }
@@ -165,7 +168,7 @@ int main(int argc, char **argv) {
     cudaEventCreate(&stop);
     cudaEventRecord(start, 0);
 
-    dim3 grid(blockNum, (degreeBins + sharedDegreeBins - 1) / sharedDegreeBins);
+    dim3 grid((w * h + 255) / 256, (degreeBins + sharedDegreeBins - 1) / sharedDegreeBins);
     dim3 block(256);
     GPU_HoughTranShared<<<grid, block>>>(d_in, w, h, d_hough, rMax, rScale);
     
@@ -250,7 +253,7 @@ int main(int argc, char **argv) {
 
     // Guardar la imagen resultante
     cv::imwrite("outputCompartida.png", imgColor);
-    printf("Generated marked image: output.png \n");
+    printf("Generated marked image: outputCompartida.png \n");
 
 
     cudaFree(d_in);
